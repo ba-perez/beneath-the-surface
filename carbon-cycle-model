@@ -571,7 +571,6 @@ kobayashi_maru <- function(
     SOC_start = numeric(),
     SOC_at_dieoff = numeric(),
     year_tipping_point = numeric(),
-    year_SOC_equals_start = numeric(),
     year_SOC_equals_unstocked = numeric()
   )
   
@@ -601,7 +600,6 @@ kobayashi_maru <- function(
       SOC_start = SOC_start,
       SOC_at_dieoff = SOC_at_dieoff,
       year_tipping_point = ifelse(!is.na(drop_below_initial), drop_below_initial, NA),
-      year_SOC_equals_start = ifelse(length(year_SOC_equals_start) > 0, min(year_SOC_equals_start), NA),
       year_SOC_equals_unstocked = ifelse(length(year_SOC_equals_unstocked) > 0, min(year_SOC_equals_unstocked), NA)
     ))
   }
