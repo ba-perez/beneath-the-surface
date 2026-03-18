@@ -141,7 +141,8 @@ Mypairs <- function(Z) {
 #### IMPORT AND PREPARE DATA ####
 # ==============================================================================
 
-# Import all field and lab data on carbon stock 
+# Import all field and lab data on carbon stock
+# (for conditions healthy, ailing, unstocked)
 soil_analyses_table <- read_excel(
   r"(path\to\dataframe.xlsx)"
 ) %>%
@@ -201,6 +202,41 @@ varpart_df <- varpart_nonhealthy %>%
 rm(soil_depth_table)
 rm(varpart_healthy, varpart_nonhealthy)
 
+gc()
+
+# ==============================================================================
+#### EQUIVALENCE OF "UNCOVERED" ####
+# ==============================================================================
+
+# Test whether terrain variables differ significantly between plot conditions
+# One-way ANOVA for each terrain variable, condition as grouping factor
+ 
+terrain_vars <- c("elevation_m", "slope_deg", "northerness", "tpi", "tri")
+anova_results <- list()
+ 
+for (var in terrain_vars) {
+  cat("\n=== ANOVA for", var, "===\n")
+  
+  # Fit one-way ANOVA
+  anova_model <- aov(as.formula(paste(var, "~ condition")), data = as.data.frame(soil_sf))
+  
+  # Store tidy results
+  anova_results[[var]] <- tidy(anova_model)
+  
+  # Print summary
+  print(summary(anova_model))
+}
+ 
+# Combine all ANOVA results into a single summary table
+anova_table <- bind_rows(anova_results, .id = "variable") %>%
+  filter(term == "condition") %>%          # Retain condition row only (exclude residuals)
+  dplyr::select(variable, df, sumsq, meansq, statistic, p.value)
+ 
+print(anova_table)
+
+# Clean up intermediate objects
+rm(anova_model, anova_results)
+ 
 gc()
 
 # ==============================================================================
