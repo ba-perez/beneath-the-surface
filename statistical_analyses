@@ -242,8 +242,97 @@ gc()
 # ==============================================================================
 #### ADD FOREST PLOTS ####
 # ==============================================================================
+
+# --- IMPORT AND PREPARE FORESTED PLOT DATA ---
  
+# Soil depth measurements for forested plots
+# Used to derive layer weights for soil chemistry calculations below
+forest_soil_depth <- read_excel(forest_soil_depths.xlsx) %>%
+  # Remove duplicate rows
+  # (values are plot-level, all rows per plot_ID are identical)
+  distinct(plot_ID, .keep_all = TRUE)
+ 
+# Soil chemistry for forest plots
+# Raw data contains soil layers humus/tangel and mineral
+# which may together exceed 10 cm
+# values are recalculated to a standard 10 cm topsoil depth
+# using layer-specific weights derived from forest_soil_depth
+forest_sf <- read.csv2(forest_soil_chemistry.csv) %>%
+  # Select mature forests only
+  filter(succession %in% c("optimal", "plenter", "terminal")) %>%
+  # Exclude gravel samples
+  filter(soil_type != "gravel") %>%
+  # Join soil depth data to obtain layer weights
+  left_join(forest_soil_depth, by = "plot_ID") %>%
+  # Assign layer-specific weights and depths
+  # tangel is treated equivalently to humus throughout
+  mutate(
+    weight = case_when(
+      soil_type == "humus"   ~ weight_humus_10cm,
+      soil_type == "mineral" ~ weight_mineral_10cm,
+      soil_type == "tangel"  ~ weight_humus_10cm,
+      TRUE ~ NA_real_
+    ),
+    depth_in_10cm = case_when(
+      soil_type == "humus"   ~ depth_humus_standard,
+      soil_type == "mineral" ~ depth_mineral_standard,
+      soil_type == "tangel"  ~ depth_humus_standard,
+      TRUE ~ NA_real_
+    ),
+    weight_deeper = case_when(
+      soil_type == "humus"   ~ weight_humus_deeper,
+      soil_type == "mineral" ~ weight_mineral_deeper,
+      soil_type == "tangel"  ~ weight_humus_deeper,
+      TRUE ~ NA_real_
+    ),
+    # Calculate weighted values per soil layer
+    # Original values are overwritten by their weighted counterparts
+    sample_mass            = bulk_density_gcm3 * depth_in_10cm,
+    H_conc                 = 10^(-pH_KCl) * sample_mass,             # H+ concentration for pH weighting
+    Corg_stock_tperha_OR   = Corg_stock_tperha,                      # Backup original C stock
+    Corg_stock_tperha_10cm = Corg_stock_tperha_OR * weight,          # C stock: top 10 cm
+    Corg_stock_tperha_deeper = Corg_stock_tperha_OR * weight_deeper, # C stock: below 10 cm
+    Corg_mass              = (Corg_perc / 100) * sample_mass         # C mass for C% weighting
+  ) %>%
+  # Pivot to one row per plot w/ each soil layer as its own column set
+  pivot_wider(
+    id_cols    = c(plot_ID),
+    names_from = soil_type,
+    values_from = c(
+      pH_KCl, H_conc, bulk_density_gcm3, Corg_perc,
+      Corg_stock_tperha_10cm, Corg_stock_tperha_deeper, Corg_mass, sample_mass
+    ),
+    names_glue = "{.value}_{ifelse(soil_type == 'humus', 'hum', ifelse(soil_type == 'tangel', 'tan', 'min'))}"
+  ) %>%
+  # Aggregate layer values to a single 10 cm topsoil estimate per plot
+  rowwise() %>%
+  mutate(
+    Corg_stock_tperha_10cm   = sum(c_across(starts_with("Corg_stock_tperha_10cm_")),   na.rm = TRUE),
+    Corg_stock_tperha_deeper = sum(c_across(starts_with("Corg_stock_tperha_deeper_")), na.rm = TRUE),
+    Corg_stock_tperha_total  = Corg_stock_tperha_10cm + Corg_stock_tperha_deeper,
+    total_mass  = sum(c_across(starts_with("sample_mass_")), na.rm = TRUE),
+    # pH: convert mass-weighted mean H+ back to pH scale
+    pH_KCl_10cm  = -log10(
+      sum(c_across(starts_with("H_conc_")), na.rm = TRUE) / total_mass
+    ),
+    # C%: mass-weighted average across layers
+    Corg_perc_10cm = sum(c_across(starts_with("Corg_mass_")),   na.rm = TRUE) /
+                     sum(c_across(starts_with("sample_mass_")), na.rm = TRUE) * 100
+  ) %>%
+  ungroup() %>%
+  # Remove intermediate helper variables
+  dplyr::select(-c(
+    starts_with("H_conc_"), starts_with("bulk_density_gcm3_"),
+    starts_with("Corg_mass_"), starts_with("sample_mass_"), total_mass
+  ))
+
+ # Clean up intermediate objects
+rm(forest_soil_depth)
+ 
+gc()
+
 # --- MATCH FOREST PLOTS TO TRIPLETS ---
+
 # Candidates for forest plots identified by weighted Euclidean distance
 # matching on terrain variables
  
@@ -395,8 +484,17 @@ final_soil <- soil_analyses_table %>%
     # Join with soil data for forest plots
     forest_sf %>%
       inner_join(soil_forest_plots, by = "plot_ID") %>%
-      # Assign forested condition
-      mutate(condition = "forested")
+      mutate(
+        # Assign forested condition
+        condition            = "forested",
+        # Rename columns to match soil_analyses_table structure
+        elevation_m          = elevation,
+        pH                   = pH_KCl_10cm,
+        Cstock_tperha        = Corg_stock_tperha_10cm,
+        Cstock_total_tperha  = Corg_stock_tperha_total,
+        soil_vol_cm3         = sample_volume_standard,
+        Corg_percent         = Corg_perc_10cm
+      )
 
 # Clean up intermediate objects
 rm(soil_forest_plots, triplet_means, matching_results)
