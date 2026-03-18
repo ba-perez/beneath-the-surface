@@ -4,7 +4,7 @@
 # 
 # AUTHOR: Barbara M. P. B. de Araujo
 #
-# LAST UPDATED: 2025.09.22.
+# LAST UPDATED: 2026.03.18.
 #
 # 
 # DESCRIPTION: 
@@ -141,18 +141,11 @@ Mypairs <- function(Z) {
 #### IMPORT AND PREPARE DATA ####
 # ==============================================================================
 
-# EXPLAIN HERE THAT ALL FIELD, LAB DATA ON CARBON STOCK HAS BEEN
-# CALCULATED AND STUFF
-
+# Import all field and lab data on carbon stock 
 soil_analyses_table <- read_excel(
   r"(path\to\dataframe.xlsx)"
 ) %>%
-  # Log-transform carbon variables (log1p handles zeros)
   mutate(
-    Cstock_log = log1p(Cstock_tperha),
-    sd_Cstock_log = log1p(sd_Cstock),
-    cv_Cstock_log = log1p(cv_Cstock),
-    
     # Standardise continuous predictors (mean = 0, sd = 1)
     northerness_sc = scale(northerness, center = TRUE, scale = TRUE)[, 1],
     elevation_sc = scale(elevation_m, center = TRUE, scale = TRUE)[, 1],
@@ -220,12 +213,12 @@ soil_analyses_corr <- soil_analyses_table %>%
     triplet = as.numeric(triplet),
     condition_num = as.numeric(factor(condition, levels = c("healthy", "ailing", "unstocked"), labels = c(1, 2, 3)))
   ) %>%
-  dplyr::select(condition_num, triplet, elevation_m, northerness, Cstock_tperha, sd_Cstock)
+  dplyr::select(condition_num, triplet, elevation_m, northerness, Cstock_tperha)
 
 # Define variables for correlation analysis
 analysed_variables <- c(
   "condition_num", "elevation_m", "northerness",
-  "Cstock_tperha", "sd_Cstock",     # Response variables
+  "Cstock_tperha",                  # Response variable
   "soil_vol_cm3", "Corg_percent",   # Variables for variance partitioning
   "triplet"                         # Random effect
 )
@@ -245,7 +238,7 @@ corr_matrix <- Mypairs(soil_analyses_corr[, variables_corr])
 
 # Fit linear mixed-effects model
 lmer_meanC <- lmer(
-  Cstock_log ~ 
+  Cstock_tperha ~ 
     condition * elevation_sc
   + condition * northerness_sc
   + (1 | triplet),
@@ -255,28 +248,12 @@ lmer_meanC <- lmer(
 
 check_model(lmer_meanC)
 
-# estimate unstocked: -1.26916
-#   back-transforming: ((exp(4.10392-1.26916)/exp(4.10392))-1)*100 = -71.89 %
-# estimate ailing: 0.14398
-#   back-transforming: ((exp(4.10392+0.14398)/exp(4.10392))-1)*100 = 15.47 %
-
-# --- STD. DEV. SOC STOCKS ---
-
-lmer_sdC <- lmer(
-  sd_Cstock_log ~ 
-    condition * elevation_sc
-  + condition * northerness_sc
-  + (1 | triplet),
-  data = soil_analyses_table,
-  REML = TRUE
-)
-
-check_model(lmer_sdC)
-
-# estimate unstocked: -0.958191
-#   back-transforming: ((exp(3.289243-0.958191)/exp(3.289243))-1)*100 = -61.64 %
-# estimate ailing: 0.125930
-#   back-transforming: ((exp(3.289243+0.125930)/exp(3.289243))-1)*100 = 13.42 %
+# estimate unstocked: -17.7120
+#   percent change: (-17.7120 / 37.463) * 100 = -47.3%
+# estimate forested: -4.5308
+#   percent change: (-4.5308 / 37.463) * 100 = -12.1%
+# estimate ailing: 3.1948
+#   percent change: (3.1948 / 37.463) * 100 = 8.5%
 
 # ==============================================================================
 #### RESEARCH QUESTION 2: VARIANCE PARTITIONING ####
