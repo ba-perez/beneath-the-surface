@@ -34,13 +34,14 @@ options(scipen = 999) # disable scientific notation
 setwd(r"(\\path\to\work\directory)")
 
 # Load required packages
+library(GGally)      # for functions used in Mypairs()
 library(readxl)      # Import data from Excel
+library(openxlsx)    # Write Excel data
 library(tidyverse)   # Data manipulation and visualisation
 library(tidyr)       # Reshape data
 library(broom)       # Tidy model output
 library(dplyr)       # Data manipulation
 library(lme4)        # Linear mixed-effects models
-library(sjPlot)      # Statistical output tables
 library(vegan)       # Variance partitioning
 library(AICcmodavg)  # AICc
 library(MuMIn)       # R-squared
@@ -136,7 +137,14 @@ Mypairs <- function(Z) {
   
   return(p)
 }
-  
+
+# Calculate weighted Euclidean distance for forest plot sleection
+weighted_distance <- function(triplet_row, wooded_matrix, weights) {
+  diff_sq <- sweep(wooded_matrix, 2, as.numeric(triplet_row), "-")^2
+  weighted_diff_sq <- sweep(diff_sq, 2, weights, "*")
+  sqrt(rowSums(weighted_diff_sq))
+}
+
 # ==============================================================================
 #### IMPORT AND PREPARE DATA ####
 # ==============================================================================
@@ -199,13 +207,12 @@ varpart_df <- varpart_nonhealthy %>%
   )
 
 # Clean up intermediate objects
-rm(soil_depth_table)
 rm(varpart_healthy, varpart_nonhealthy)
 
 gc()
 
 # ==============================================================================
-#### EQUIVALENCE OF "UNSTOCKED" ####
+#### TERRAIN EQUIVALENCE ACROSS CONDITIONS ####
 # ==============================================================================
 
 # Test whether terrain variables differ significantly between plot conditions
@@ -218,7 +225,7 @@ for (var in terrain_vars) {
   cat("\n=== ANOVA for", var, "===\n")
   
   # Fit one-way ANOVA
-  anova_model <- aov(as.formula(paste(var, "~ condition")), data = as.data.frame(soil_sf))
+  anova_model <- aov(as.formula(paste(var, "~ condition")), data = as.data.frame(soil_analyses_table))
   
   # Store tidy results
   anova_results[[var]] <- tidy(anova_model)
@@ -247,7 +254,7 @@ gc()
  
 # Soil depth measurements for forested plots
 # Used to derive layer weights for soil chemistry calculations below
-forest_soil_depth <- read_excel(forest_soil_depths.xlsx) %>%
+forest_soil_depth <- read_excel("forest_soil_depths.xlsx") %>%
   # Remove duplicate rows
   # (values are plot-level, all rows per plot_ID are identical)
   distinct(plot_ID, .keep_all = TRUE)
@@ -257,7 +264,7 @@ forest_soil_depth <- read_excel(forest_soil_depths.xlsx) %>%
 # which may together exceed 10 cm
 # values are recalculated to a standard 10 cm topsoil depth
 # using layer-specific weights derived from forest_soil_depth
-forest_sf <- read.csv2(forest_soil_chemistry.csv) %>%
+forest_sf <- read.csv2("forest_soil_chemistry.csv") %>%
   # Select mature forests only
   filter(succession %in% c("optimal", "plenter", "terminal")) %>%
   # Exclude gravel samples
@@ -346,8 +353,7 @@ display_vars <- c(
 )
  
 # Calculate triplet means across all display variables
-triplet_means <- soil_sf %>%
-  st_drop_geometry() %>%
+triplet_means <- soil_analyses_table %>%
   group_by(triplet) %>%
   summarise(across(all_of(display_vars), mean, na.rm = TRUE),
             .groups = "drop")
@@ -495,6 +501,7 @@ final_soil <- soil_analyses_table %>%
         soil_vol_cm3         = sample_volume_standard,
         Corg_percent         = Corg_perc_10cm
       )
+)
 
 # Clean up intermediate objects
 rm(soil_forest_plots, triplet_means, matching_results)
@@ -506,10 +513,10 @@ gc()
 # ==============================================================================
 
 # Prepare correlation analysis dataset
-soil_analyses_corr <- soil_analyses_table %>%
+final_soil_corr <- final_soil %>%
   mutate(
     triplet = as.numeric(triplet),
-    condition_num = as.numeric(factor(condition, levels = c("healthy", "ailing", "unstocked"), labels = c(1, 2, 3)))
+    condition_num = as.numeric(factor(condition, levels = c("healthy", "ailing", "unstocked", "forested"), labels = c(1, 2, 3)))
   ) %>%
   dplyr::select(condition_num, triplet, elevation_m, northerness, Cstock_tperha)
 
@@ -521,12 +528,12 @@ analysed_variables <- c(
   "triplet"                         # Random effect
 )
 
-soil_analyses_corr <- soil_analyses_corr %>%
-  subset(select = names(soil_analyses_corr) %in% analysed_variables)
+final_soil_corr <- final_soil_corr %>%
+  subset(select = names(final_soil_corr) %in% analysed_variables)
 
 # Generate correlation matrix
-variables_corr <- names(soil_analyses_corr)[sapply(soil_analyses_corr, is.numeric)]
-corr_matrix <- Mypairs(soil_analyses_corr[, variables_corr])
+variables_corr <- names(final_soil_corr)[sapply(final_soil_corr, is.numeric)]
+corr_matrix <- Mypairs(final_soil_corr[, variables_corr])
 
 # ==============================================================================
 #### RESEARCH QUESTION 1: SOC STOCKS BY MOUNTAIN PINE HEALTH CATEGORY ####
@@ -540,7 +547,7 @@ lmer_meanC <- lmer(
     condition * elevation_sc
   + condition * northerness_sc
   + (1 | triplet),
-  data = soil_analyses_table,
+  data = final_soil,
   REML = TRUE
 )
 
