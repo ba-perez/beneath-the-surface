@@ -205,7 +205,7 @@ rm(varpart_healthy, varpart_nonhealthy)
 gc()
 
 # ==============================================================================
-#### EQUIVALENCE OF "UNCOVERED" ####
+#### EQUIVALENCE OF "UNSTOCKED" ####
 # ==============================================================================
 
 # Test whether terrain variables differ significantly between plot conditions
@@ -236,6 +236,170 @@ print(anova_table)
 
 # Clean up intermediate objects
 rm(anova_model, anova_results)
+ 
+gc()
+
+# ==============================================================================
+#### ADD FOREST PLOTS ####
+# ==============================================================================
+ 
+# --- MATCH FOREST PLOTS TO TRIPLETS ---
+# Candidates for forest plots identified by weighted Euclidean distance
+# matching on terrain variables
+ 
+# Variables to use for matching
+matching_vars <- c("elevation_m", "northerness_cat")
+ 
+# All variables to display in results 
+# (for manual selection later)
+display_vars <- c(
+  "elevation_m", "slope_deg", "northerness_cat", "tpi", "tri"
+)
+ 
+# Calculate triplet means across all display variables
+triplet_means <- soil_sf %>%
+  st_drop_geometry() %>%
+  group_by(triplet) %>%
+  summarise(across(all_of(display_vars), mean, na.rm = TRUE),
+            .groups = "drop")
+ 
+# Define weights for matching variables
+weights <- c(
+  elevation_m    = 2,
+  northerness_cat = 0.25
+)
+ 
+# Combine triplet and wooded data for standardisation
+# (matching variables only)
+all_env <- bind_rows(
+  triplet_means %>% dplyr::select(all_of(matching_vars)) %>% mutate(type = "triplet"),
+  forest_sf     %>% dplyr::select(all_of(matching_vars)) %>% mutate(type = "wooded")
+)
+ 
+# Standardise matching variables (z-scores)
+env_scaled <- all_env %>%
+  mutate(across(all_of(matching_vars), ~scale(.)[, 1]))
+ 
+# Split back into triplet and wooded subsets
+triplet_scaled <- env_scaled %>% filter(type == "triplet") %>% dplyr::select(-type)
+wooded_scaled  <- env_scaled %>% filter(type == "wooded")  %>% dplyr::select(-type)
+ 
+# Convert to matrices to calculate distance
+triplet_matrix <- as.matrix(triplet_scaled[, matching_vars])
+wooded_matrix  <- as.matrix(wooded_scaled[,  matching_vars])
+ 
+# Calculate weighted distances, retrieve top 5 candidates per triplet
+results <- list()
+ 
+for (i in 1:nrow(triplet_matrix)) {
+  distances <- weighted_distance(triplet_matrix[i, ], wooded_matrix, weights)
+  
+  # Rank candidates by distance (closest first)
+  top5_idx <- order(distances)[1:5]
+  
+  results[[i]] <- data.frame(
+    triplet            = triplet_means$triplet[i],
+    rank               = 1:5,
+    matched_plot_ID    = forest_sf$plot_ID[top5_idx],
+    distance           = distances[top5_idx],
+    piab_percentage    = forest_sf$piab_percentage[top5_idx],
+    conif_percentage   = forest_sf$conif_percentage[top5_idx],
+    # All environmental values for matched plots (for reference)
+    matched_elevation_m      = forest_sf$elevation_m[top5_idx],
+    matched_slope            = forest_sf$slope_deg[top5_idx],
+    matched_northerness_cat  = forest_sf$northerness_cat[top5_idx],
+    matched_tpi              = forest_sf$tpi[top5_idx],
+    matched_tri              = forest_sf$tri[top5_idx]
+  )
+}
+ 
+# Compile results, join triplet ref values for side-by-side comparison
+matching_results <- bind_rows(results) %>%
+  left_join(
+    triplet_means %>%
+      dplyr::select(
+        triplet,
+        triplet_elevation_m     = elevation_m,
+        triplet_slope           = slope_deg,
+        triplet_northerness_cat = northerness_cat,
+        triplet_tpi             = tpi,
+        triplet_tri             = tri
+      ),
+    by = "triplet"
+  ) %>%
+  # Group matched and triplet values by variable for readability
+  dplyr::select(
+    triplet,
+    rank,
+    matched_plot_ID,
+    distance,
+    piab_percentage,
+    conif_percentage,
+    matched_elevation_m,    triplet_elevation_m,      # Elevation
+    matched_northerness_cat, triplet_northerness_cat, # Northerness
+    matched_slope,          triplet_slope,            # Slope
+    matched_tpi,            triplet_tpi,              # TPI
+    matched_tri,            triplet_tri               # TRI
+  )
+ 
+write.xlsx(
+  matching_results,
+  r"(forest_plot_matches.xlsx)",
+  rowNames = FALSE
+)
+
+# Clean up intermediate objects
+rm(all_env, env_scaled, triplet_scaled, wooded_scaled,
+   triplet_matrix, wooded_matrix, results)
+ 
+gc()
+ 
+# --- FINAL FOREST PLOT SELECTION ---
+ 
+# Top candidates from matching_results were inspected manually
+# Final plot-to-triplet assignments decided on manually
+ 
+soil_forest_plots <- tibble::tribble(
+  ~plot_ID, ~triplet,
+  "F152",  4,
+  "F006",  1,
+  "F003",  9,
+  "F005",  5,
+  "F154",  6,
+  "F007",  2,
+  "F004",  7,
+  "F013",  3,
+  "F012",  8,
+  "F026", 23,
+  "F083", 22,
+  "F073", 18,
+  "F085", 19,
+  "F051", 20,
+  "F020", 24,
+  "F143", 21,
+  "F021", 25,
+  "F078", 14,
+  "F134", 17,
+  "F138", 16,
+  "F050", 12,
+  "F044", 15,
+  "F049", 13,
+  "F048", 11,
+  "F046", 10
+)
+ 
+# Combine original soil plots with selected forested plots
+# final_soil replaces soil_analyses_table for all subsequent analyses
+final_soil <- soil_analyses_table %>%
+  bind_rows(
+    # Join with soil data for forest plots
+    forest_sf %>%
+      inner_join(soil_forest_plots, by = "plot_ID") %>%
+      # Assign forested condition
+      mutate(condition = "forested")
+
+# Clean up intermediate objects
+rm(soil_forest_plots, triplet_means, matching_results)
  
 gc()
 
