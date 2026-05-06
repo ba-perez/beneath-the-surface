@@ -260,77 +260,69 @@ forest_soil_depth <- read_excel("forest_soil_depths.xlsx") %>%
   distinct(plot_ID, .keep_all = TRUE)
  
 # Soil chemistry for forest plots
-# Raw data contains soil layers humus/tangel and mineral
-# which may together exceed 10 cm
-# values are recalculated to a standard 10 cm topsoil depth
-# using layer-specific weights derived from forest_soil_depth
+# Raw data has soil layers humus and tangel per plot
+# Each plot was sampled at four corners, samples then pooled by layer type
+# weight_humus + weight_tangel record 
+# the proportion of corners where each layer was present
+# used to weight layer contributions 
+# when aggregating to a single plot estimate
+# Plotsconsist entirely of humus/tangel up to 10 cm soil depth
+# so results from mineral samples (always deeper layers) are excluded
 forest_sf <- read.csv2("forest_soil_chemistry.csv") %>%
-  # Select mature forests only
-  filter(succession %in% c("optimal", "plenter", "terminal")) %>%
-  # Exclude gravel samples
-  filter(soil_type != "gravel") %>%
+  # Exclude gap succession plots
+  filter(!succession %in% c("gap")) %>%
+  # Exclude gravel and mineral samples
+  # (analysed plots are 100% humus/tangel in upper 10 cm)
+  filter(!soil_type %in% c("gravel", "mineral")) %>%
   # Join soil depth data to obtain layer weights
   left_join(forest_soil_depth, by = "plot_ID") %>%
-  # Assign layer-specific weights and depths
-  # tangel is treated equivalently to humus throughout
+  # Assign layer-specific depths, calculate weighted values per soil type
+  # Original values are overwritten by their weighted counterparts
   mutate(
-    weight = case_when(
-      soil_type == "humus"   ~ weight_humus_10cm,
-      soil_type == "mineral" ~ weight_mineral_10cm,
-      soil_type == "tangel"  ~ weight_humus_10cm,
-      TRUE ~ NA_real_
-    ),
-    depth_in_10cm = case_when(
-      soil_type == "humus"   ~ depth_humus_standard,
-      soil_type == "mineral" ~ depth_mineral_standard,
-      soil_type == "tangel"  ~ depth_humus_standard,
-      TRUE ~ NA_real_
-    ),
-    weight_deeper = case_when(
-      soil_type == "humus"   ~ weight_humus_deeper,
-      soil_type == "mineral" ~ weight_mineral_deeper,
-      soil_type == "tangel"  ~ weight_humus_deeper,
-      TRUE ~ NA_real_
-    ),
-    # Calculate weighted values per soil layer
-    # Original values are overwritten by their weighted counterparts
-    sample_mass            = bulk_density_gcm3 * depth_in_10cm,
-    H_conc                 = 10^(-pH_KCl) * sample_mass,             # H+ concentration for pH weighting
-    Corg_stock_tperha_OR   = Corg_stock_tperha,                      # Backup original C stock
-    Corg_stock_tperha_10cm = Corg_stock_tperha_OR * weight,          # C stock: top 10 cm
-    Corg_stock_tperha_deeper = Corg_stock_tperha_OR * weight_deeper, # C stock: below 10 cm
-    Corg_mass              = (Corg_perc / 100) * sample_mass         # C mass for C% weighting
+    # Humus depth applies to tangel as well
+    depth_in_10cm = depth_humus_standard,
+    sample_mass   = bulk_density_gcm3 * depth_in_10cm,
+    # pH: convert to H+ concentration weighted by mass
+    H_conc        = 10^(-pH_KCl) * sample_mass,
+    # C%: calculate C mass for the 10 cm sample
+    Corg_mass     = (Corg_perc / 100) * sample_mass
   ) %>%
-  # Pivot to one row per plot w/ each soil layer as its own column set
+  # Pivot to one row per plot
+  # Each soil layer as its own column set
   pivot_wider(
-    id_cols    = c(plot_ID),
-    names_from = soil_type,
+    id_cols     = c(plot_ID, weight_humus, weight_tangel),
+    names_from  = soil_type,
     values_from = c(
-      pH_KCl, H_conc, bulk_density_gcm3, Corg_perc,
-      Corg_stock_tperha_10cm, Corg_stock_tperha_deeper, Corg_mass, sample_mass
+      pH_KCl, H_conc, Corg_perc, Corg_stock_tperha,
+      Corg_mass, sample_mass
     ),
-    names_glue = "{.value}_{ifelse(soil_type == 'humus', 'hum', ifelse(soil_type == 'tangel', 'tan', 'min'))}"
+    names_glue = "{.value}_{ifelse(soil_type == 'humus', 'hum', 'tan')}"
   ) %>%
-  # Aggregate layer values to a single 10 cm topsoil estimate per plot
+  # Aggregate layer values to a single estimate per plot
   rowwise() %>%
   mutate(
-    Corg_stock_tperha_10cm   = sum(c_across(starts_with("Corg_stock_tperha_10cm_")),   na.rm = TRUE),
-    Corg_stock_tperha_deeper = sum(c_across(starts_with("Corg_stock_tperha_deeper_")), na.rm = TRUE),
-    Corg_stock_tperha_total  = Corg_stock_tperha_10cm + Corg_stock_tperha_deeper,
-    total_mass  = sum(c_across(starts_with("sample_mass_")), na.rm = TRUE),
+    # C stock: weighted by proportion of plot corners with each layer type
+    Corg_stock_tperha_10cm = sum(
+      Corg_stock_tperha_hum * weight_humus,
+      Corg_stock_tperha_tan * weight_tangel,
+      na.rm = TRUE
+    ),
     # pH: convert mass-weighted mean H+ back to pH scale
+    total_mass   = sum(c_across(starts_with("sample_mass_")), na.rm = TRUE),
     pH_KCl_10cm  = -log10(
       sum(c_across(starts_with("H_conc_")), na.rm = TRUE) / total_mass
     ),
     # C%: mass-weighted average across layers
-    Corg_perc_10cm = sum(c_across(starts_with("Corg_mass_")),   na.rm = TRUE) /
-                     sum(c_across(starts_with("sample_mass_")), na.rm = TRUE) * 100
+    Corg_perc_10cm = sum(c_across(starts_with("Corg_mass_")), na.rm = TRUE) /
+      total_mass * 100
   ) %>%
   ungroup() %>%
   # Remove intermediate helper variables
   dplyr::select(-c(
-    starts_with("H_conc_"), starts_with("bulk_density_gcm3_"),
-    starts_with("Corg_mass_"), starts_with("sample_mass_"), total_mass
+    starts_with("H_conc_"),
+    starts_with("Corg_mass_"),
+    starts_with("sample_mass_"),
+    total_mass
   ))
 
  # Clean up intermediate objects
@@ -340,31 +332,33 @@ gc()
 
 # --- MATCH FOREST PLOTS TO TRIPLETS ---
 
-# Candidates for forest plots identified by weighted Euclidean distance
-# matching on terrain variables
+# Weighted Euclidean distance matching on terrain variables
+# solved through Hungarian algorithm
  
-# Variables to use for matching
-matching_vars <- c("elevation_m", "northerness_cat")
- 
-# All variables to display in results 
-# (for manual selection later)
-display_vars <- c(
-  "elevation_m", "slope_deg", "northerness_cat", "tpi", "tri"
+# Matching variables
+matching_vars <- c(
+  "elevation_m",
+  "northerness",
+  "slope_deg", "tpi", "tri"
 )
  
-# Calculate triplet means across all display variables
-triplet_means <- soil_analyses_table %>%
+# Variable weights
+weights <- c(
+  elevation_m  = 2.00,
+  northerness  = 0.50,
+  slope_deg    = 0.10,
+  tpi          = 0.10,
+  tri          = 0.10
+)
+ 
+# Calculate triplet means across all matching variables
+triplet_means <- soil_sf %>%
+  st_drop_geometry() %>%
   group_by(triplet) %>%
-  summarise(across(all_of(display_vars), mean, na.rm = TRUE),
+  summarise(across(all_of(matching_vars), mean, na.rm = TRUE),
             .groups = "drop")
  
-# Define weights for matching variables
-weights <- c(
-  elevation_m    = 2,
-  northerness_cat = 0.25
-)
- 
-# Combine triplet and wooded data for standardisation
+# Combine triplet and forest data for standardisation
 # (matching variables only)
 all_env <- bind_rows(
   triplet_means %>% dplyr::select(all_of(matching_vars)) %>% mutate(type = "triplet"),
@@ -375,136 +369,116 @@ all_env <- bind_rows(
 env_scaled <- all_env %>%
   mutate(across(all_of(matching_vars), ~scale(.)[, 1]))
  
-# Split back into triplet and wooded subsets
+# Split back into triplet and forest subsets
 triplet_scaled <- env_scaled %>% filter(type == "triplet") %>% dplyr::select(-type)
 wooded_scaled  <- env_scaled %>% filter(type == "wooded")  %>% dplyr::select(-type)
  
-# Convert to matrices to calculate distance
+# Convert to matrices for cost calculation
+n_trip <- nrow(triplet_scaled)
+n_for  <- nrow(wooded_scaled)
+ 
 triplet_matrix <- as.matrix(triplet_scaled[, matching_vars])
 wooded_matrix  <- as.matrix(wooded_scaled[,  matching_vars])
  
-# Calculate weighted distances, retrieve top 5 candidates per triplet
-results <- list()
+# Cost matrix: squared weighted distance between each triplet-forest pair
+cost_matrix <- matrix(NA, nrow = n_trip, ncol = n_for)
  
-for (i in 1:nrow(triplet_matrix)) {
-  distances <- weighted_distance(triplet_matrix[i, ], wooded_matrix, weights)
-  
-  # Rank candidates by distance (closest first)
-  top5_idx <- order(distances)[1:5]
-  
-  results[[i]] <- data.frame(
-    triplet            = triplet_means$triplet[i],
-    rank               = 1:5,
-    matched_plot_ID    = forest_sf$plot_ID[top5_idx],
-    distance           = distances[top5_idx],
-    piab_percentage    = forest_sf$piab_percentage[top5_idx],
-    conif_percentage   = forest_sf$conif_percentage[top5_idx],
-    # All environmental values for matched plots (for reference)
-    matched_elevation_m      = forest_sf$elevation_m[top5_idx],
-    matched_slope            = forest_sf$slope_deg[top5_idx],
-    matched_northerness_cat  = forest_sf$northerness_cat[top5_idx],
-    matched_tpi              = forest_sf$tpi[top5_idx],
-    matched_tri              = forest_sf$tri[top5_idx]
-  )
+for (i in seq_len(n_trip)) {
+  for (j in seq_len(n_for)) {
+    diffs <- triplet_matrix[i, ] - wooded_matrix[j, ]
+    cost_matrix[i, j] <- sum(weights * diffs^2)
+  }
 }
  
-# Compile results, join triplet ref values for side-by-side comparison
-matching_results <- bind_rows(results) %>%
-  left_join(
-    triplet_means %>%
-      dplyr::select(
-        triplet,
-        triplet_elevation_m     = elevation_m,
-        triplet_slope           = slope_deg,
-        triplet_northerness_cat = northerness_cat,
-        triplet_tpi             = tpi,
-        triplet_tri             = tri
-      ),
-    by = "triplet"
-  ) %>%
-  # Group matched and triplet values by variable for readability
-  dplyr::select(
-    triplet,
-    rank,
-    matched_plot_ID,
-    distance,
-    piab_percentage,
-    conif_percentage,
-    matched_elevation_m,    triplet_elevation_m,      # Elevation
-    matched_northerness_cat, triplet_northerness_cat, # Northerness
-    matched_slope,          triplet_slope,            # Slope
-    matched_tpi,            triplet_tpi,              # TPI
-    matched_tri,            triplet_tri               # TRI
-  )
+# Solve assignment (Hungarian algorithm)
+assignment   <- solve_LSAP(cost_matrix, maximum = FALSE)
+assigned_idx <- as.integer(assignment)
  
-write.xlsx(
-  matching_results,
-  r"(forest_plot_matches.xlsx)",
-  rowNames = FALSE
-)
-
+# Compile results, join triplet reference values for comparison
+forest_assigned <- forest_sf %>%
+  st_drop_geometry() %>%
+  slice(assigned_idx)
+ 
+results_hungarian <- data.frame(
+  triplet          = triplet_means$triplet,
+  matched_plot_ID  = forest_assigned$plot_ID,
+  within_wimbach   = forest_assigned$within_wimbach,
+  pair_cost        = cost_matrix[cbind(seq_len(n_trip), assigned_idx)],
+  piab_percentage  = forest_assigned$piab_percentage,
+  conif_percentage = forest_assigned$conif_percentage,
+  # Elevation
+  matched_elevation_m      = forest_assigned$elevation_m,
+  triplet_elevation_m      = triplet_means$elevation_m,
+  diff_elevation_m         = abs(triplet_means$elevation_m - forest_assigned$elevation_m),
+  # Northerness
+  matched_northerness      = forest_assigned$northerness,
+  triplet_northerness      = triplet_means$northerness,
+  diff_northerness         = abs(triplet_means$northerness - forest_assigned$northerness),
+  # Slope
+  matched_slope            = forest_assigned$slope_deg,
+  triplet_slope            = triplet_means$slope_deg,
+  diff_slope               = abs(triplet_means$slope_deg - forest_assigned$slope_deg),
+  # TPI
+  matched_tpi              = forest_assigned$tpi,
+  triplet_tpi              = triplet_means$tpi,
+  diff_tpi                 = abs(triplet_means$tpi - forest_assigned$tpi),
+  # TRI
+  matched_tri              = forest_assigned$tri,
+  triplet_tri              = triplet_means$tri,
+  diff_tri                 = abs(triplet_means$tri - forest_assigned$tri)
+) %>%
+  # Sort high to low elevation
+  arrange(desc(triplet_elevation_m))
+ 
 # Clean up intermediate objects
-rm(all_env, env_scaled, triplet_scaled, wooded_scaled,
-   triplet_matrix, wooded_matrix, results)
+rm(
+  weights, triplet_means, all_env,
+  env_scaled, triplet_scaled, wooded_scaled,
+  n_trip, n_for, triplet_matrix, wooded_matrix, cost_matrix,
+  assignment, assigned_idx
+)
  
 gc()
  
-# --- FINAL FOREST PLOT SELECTION ---
- 
-# Top candidates from matching_results were inspected manually
-# Final plot-to-triplet assignments decided on manually
- 
-soil_forest_plots <- tibble::tribble(
-  ~plot_ID, ~triplet,
-  "F152",  4,
-  "F006",  1,
-  "F003",  9,
-  "F005",  5,
-  "F154",  6,
-  "F007",  2,
-  "F004",  7,
-  "F013",  3,
-  "F012",  8,
-  "F026", 23,
-  "F083", 22,
-  "F073", 18,
-  "F085", 19,
-  "F051", 20,
-  "F020", 24,
-  "F143", 21,
-  "F021", 25,
-  "F078", 14,
-  "F134", 17,
-  "F138", 16,
-  "F050", 12,
-  "F044", 15,
-  "F049", 13,
-  "F048", 11,
-  "F046", 10
-)
+# --- FINAL DATASET W/ FOREST ---
  
 # Combine original soil plots with selected forested plots
-# final_soil replaces soil_analyses_table for all subsequent analyses
-final_soil <- soil_analyses_table %>%
+# final_soil replaces soil_sf for all subsequent analyses
+final_soil <- soil_sf %>%
+# Plot-to-triplet assignments from Hungarian algorithm
   bind_rows(
-    # Join with soil data for forest plots
     forest_sf %>%
-      inner_join(soil_forest_plots, by = "plot_ID") %>%
+      inner_join(
+        results_hungarian %>%
+          dplyr::select(plot_ID = matched_plot_ID, triplet),
+        by = "plot_ID"
+      ) %>%
       mutate(
         # Assign forested condition
-        condition            = "forested",
-        # Rename columns to match soil_analyses_table structure
-        elevation_m          = elevation,
-        pH                   = pH_KCl_10cm,
-        Cstock_tperha        = Corg_stock_tperha_10cm,
-        Cstock_total_tperha  = Corg_stock_tperha_total,
-        soil_vol_cm3         = sample_volume_standard,
-        Corg_percent         = Corg_perc_10cm
+        condition       = "forested",
+        # Rename columns to match soil_sf structure
+        elevation_m     = elevation,
+        pH              = pH_KCl_10cm,
+        Cstock_tperha   = Corg_stock_tperha_10cm,
+        soil_vol_cm3    = sample_volume_standard,
+        Corg_percent    = Corg_perc_10cm,
+        mean_soil_depth = mean_depth_plot,
+        sd_soil_depth   = sd_depth_plot
+      ) %>%
+      dplyr::select(
+        plot_ID, triplet, condition, elevation_m, pH, northerness,
+        mean_soil_depth, sd_soil_depth, soil_vol_cm3, Cstock_tperha,
+        Corg_percent, slope_deg, tpi, tri, geometry
       )
-)
-
+  ) %>%
+  dplyr::select(
+    plot_ID, triplet, condition, elevation_m, northerness, slope_deg,
+    tpi, tri, mean_soil_depth, sd_soil_depth, soil_vol_cm3, Corg_percent,
+    SOM_percent, Cstock_tperha, pH, geometry
+  )
+ 
 # Clean up intermediate objects
-rm(soil_forest_plots, triplet_means, matching_results)
+rm(soil_forest_plots, results_hungarian, forest_assigned)
  
 gc()
 
